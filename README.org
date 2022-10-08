@@ -1,0 +1,2 @@
+* Into
+This is simple boids model implemention by go.
