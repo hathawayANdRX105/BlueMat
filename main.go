@@ -1,8 +1,7 @@
 package main
 
 import (
-	entities "hathawayANdRX105/boids/entites"
-	"hathawayANdRX105/boids/systems"
+	"hathawayANdRX105/boids/boid"
 	"image/color"
 
 	"github.com/EngoEngine/ecs"
@@ -28,12 +27,15 @@ func (*myScene) Preload() {}
 // Setup is called before the main loop starts. It allows you
 // to add entities and systems to your Scene.
 func (*myScene) Setup(updater engo.Updater) {
+	var (
+		rs common.RenderSystem
+		ms boid.BoidSystem
+	)
+
 	world, _ := updater.(*ecs.World)
 	common.SetBackground(color.Black)
 
-	boids := entities.NewBoidsSet(boidCount, BoundaryX, BoundaryY)
-	var rs common.RenderSystem
-	var ms systems.MovementSystem
+	boids := boid.NewBoidsSet(boidCount, BoundaryX, BoundaryY)
 	ms.Config(boids, BoundaryX, BoundaryY)
 
 	world.AddSystem(&rs)
@@ -41,13 +43,11 @@ func (*myScene) Setup(updater engo.Updater) {
 
 	for _, b := range boids {
 		rs.Add(&b.BasicEntity, &b.RenderComponent, &b.SpaceComponent)
-		ms.FillComponent(b)
 	}
 
 }
 
 func main() {
-
 	opts := engo.RunOptions{
 		Title:  "boids model",
 		Width:  int(BoundaryX),
