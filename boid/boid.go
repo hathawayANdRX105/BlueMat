@@ -13,8 +13,8 @@ import (
 
 var (
 	green              = color.RGBA{10, 255, 50, 255}
-	Radius     float32 = 10
-	speed      float32 = 8
+	speed      float32 = 3
+	radius     float32 = 10
 	viewRadius float32 = 13
 	adjRate    float32 = 0.015
 )
@@ -24,12 +24,12 @@ func NewBoidsSet(boidCount int, boundaryX, boundaryY float32) []*Boid {
 	boids := make([]*Boid, 0, boidCount)
 	for i := 0; i < boidCount; i++ {
 		boid := Boid{
-			BId:         i,
+			bid:         i,
 			BasicEntity: ecs.NewBasic(),
 			SpaceComponent: common.SpaceComponent{
 				Position: engo.Point{X: rand.Float32() * boundaryX, Y: rand.Float32() * boundaryY},
-				Width:    Radius,
-				Height:   Radius,
+				Width:    radius,
+				Height:   radius,
 			},
 			RenderComponent: common.RenderComponent{
 				Drawable: common.Circle{},
@@ -45,8 +45,9 @@ func NewBoidsSet(boidCount int, boundaryX, boundaryY float32) []*Boid {
 }
 
 type Boid struct {
-	BId   int
-	speed engo.Point
+	bid          int
+	speed        engo.Point
+	nextPosition engo.Point
 	ecs.BasicEntity
 	common.RenderComponent
 	common.SpaceComponent
@@ -55,22 +56,33 @@ type Boid struct {
 type BoidSystem struct {
 	bx, by  float32 // the boundary of the X or Y axis
 	boids   []*Boid
-	viewMap [][]*Boid
+	curMap  [][]*Boid
+	nextMap [][]*Boid
 }
 
 func (bs *BoidSystem) Config(boids []*Boid, bx, by float32) {
 	row, col := int(bx), int(by)
-	viewMap := make([][]*Boid, 0, row)
+	curMap := make([][]*Boid, 0, row)
+	nextMap := make([][]*Boid, 0, row)
 
 	for row > 0 {
-		viewMap = append(viewMap, make([]*Boid, col))
 		row--
+		curMap = append(curMap, make([]*Boid, col))
+		nextMap = append(nextMap, make([]*Boid, col))
 	}
 
-	bs.bx = bx
-	bs.by = by
-	bs.viewMap = viewMap
+	for _, b := range boids {
+		x, y := b.Position.X+b.speed.X, b.Position.Y+b.speed.Y
+		b.nextPosition = engo.Point{X: x, Y: y}
+		curMap[int(b.Position.X)][int(b.Position.Y)] = b
+		nextMap[int(x)][int(y)] = b
+	}
+
+	bs.bx = bx - radius
+	bs.by = by - radius
 	bs.boids = boids
+	bs.curMap = curMap
+	bs.nextMap = nextMap
 }
 
 func (bs *BoidSystem) New(*ecs.World) {}
@@ -89,6 +101,11 @@ func limit(x, y, z float32) int {
 	return int(y)
 }
 
+func addV(p *engo.Point, y float32) {
+	p.X += y
+	p.Y += y
+}
+
 func divideV(p *engo.Point, y float32) *engo.Point {
 	if y < 1 {
 		return p
@@ -104,6 +121,22 @@ func multiplyV(p *engo.Point, y float32) *engo.Point {
 	return p
 }
 
+func minF32(a, b float32) float32 {
+	if a < b {
+		return a
+	}
+
+	return b
+}
+
+func maxF32(a, b float32) float32 {
+	if a > b {
+		return a
+	}
+
+	return b
+}
+
 func (bs *BoidSystem) addSeparateImpact() {
 
 }
@@ -112,32 +145,65 @@ func (bs *BoidSystem) addCohesionImpact() {
 
 }
 
-func (bs *BoidSystem) addAlignImpact() {
+func (bs *BoidSystem) clacAcceleration(boid *Boid) engo.Point {
+	nextMap := bs.nextMap
 
+	lx, ly := int(maxF32(0, boid.Position.X-viewRadius)), int(maxF32(0, boid.Position.Y-viewRadius))
+	ux, uy := int(minF32(bs.bx, boid.Position.X+viewRadius)), int(minF32(bs.by, boid.Position.Y+viewRadius))
+
+	var avgVec, avgPoi engo.Point
+
+	var count int
+	for lx <= ux {
+		for ly <= uy {
+			if nextMap[lx][ly] != nil {
+				avgVec.Add(nextMap[lx][ly].speed)
+				avgPoi.Add(nextMap[lx][ly].Position)
+				count++
+			}
+			ly++
+		}
+		lx++
+	}
+	divideV(&avgVec, float32(count))
+	divideV(&avgPoi, float32(count))
+	multiplyV(avgVec.Add(avgPoi), adjRate)
+	return avgVec
 }
 
-func (bs *BoidSystem) boudnaryCollision() {
-	for _, boid := range bs.boids {
-		space, speed := &boid.Position, &boid.speed
+// change boid speed direction
+func (bs *BoidSystem) boudnaryCollision(boid *Boid) {
+	nextPosition, speed := &boid.nextPosition, &boid.speed
 
-		space.Add(*speed)
-
-		if space.X < 0 || space.X > bs.bx {
-			speed.X = -speed.X
-		}
-
-		if space.Y < 0 || space.Y > bs.by {
-			speed.Y = -speed.Y
-		}
-
+	if nextPosition.X < 0 || nextPosition.X > bs.bx {
+		speed.X = -speed.X
 	}
 
+	if nextPosition.Y < 0 || nextPosition.Y > bs.by {
+		speed.Y = -speed.Y
+	}
 }
 
 func (bs *BoidSystem) Update(float32) {
-	bs.addAlignImpact()
-	bs.addCohesionImpact()
-	bs.addSeparateImpact()
-	bs.boudnaryCollision()
+
+	for _, boid := range bs.boids {
+		// delete old position of boid
+		bs.curMap[limit(0, boid.Position.X, bs.bx)][limit(0, boid.Position.Y, bs.by)] = nil
+
+		accel := bs.clacAcceleration(boid)
+		multiplyV(accel.Subtract(boid.speed), adjRate)
+		boid.speed.Add(accel)
+
+		bs.addSeparateImpact()
+		bs.boudnaryCollision(boid)
+
+		boid.Position = boid.nextPosition
+		boid.nextPosition.Add(boid.speed)
+		// add new position of boid
+		bs.curMap[limit(0, boid.Position.X, bs.bx)][limit(0, boid.Position.Y, bs.by)] = boid
+	}
+
+	bs.curMap, bs.nextMap = bs.nextMap, bs.curMap
+
 	time.Sleep(5 * time.Millisecond)
 }

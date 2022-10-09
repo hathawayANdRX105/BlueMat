@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	boidCount         = 10
+	boidCount         = 50
 	BoundaryY float32 = 600
 	BoundaryX float32 = 1200
 )
@@ -48,6 +48,7 @@ func (*myScene) Setup(updater engo.Updater) {
 }
 
 func main() {
+
 	opts := engo.RunOptions{
 		Title:  "boids model",
 		Width:  int(BoundaryX),
