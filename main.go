@@ -12,7 +12,7 @@ import (
 var (
 	boidCount         = 50
 	BoundaryY float32 = 600
-	BoundaryX float32 = 1200
+	BoundaryX float32 = 600
 )
 
 type myScene struct{}

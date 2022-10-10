@@ -2,8 +2,9 @@ package boid
 
 import (
 	"image/color"
+	"log"
+	"math"
 	"math/rand"
-	"time"
 
 	"github.com/EngoEngine/engo"
 
@@ -13,21 +14,24 @@ import (
 
 var (
 	green              = color.RGBA{10, 255, 50, 255}
-	speed      float32 = 3
+	speed      float32 = 0.5
 	radius     float32 = 10
-	viewRadius float32 = 13
-	adjRate    float32 = 0.015
+	viewRadius float32 = 150
+	adjRate    float32 = 0.0015
 )
 
 func NewBoidsSet(boidCount int, boundaryX, boundaryY float32) []*Boid {
 	// loop for building entities
+	var safeGap float32 = 70
+	safeX, safeY := boundaryX-2*safeGap, boundaryY-2*safeGap
 	boids := make([]*Boid, 0, boidCount)
+
 	for i := 0; i < boidCount; i++ {
 		boid := Boid{
 			bid:         i,
 			BasicEntity: ecs.NewBasic(),
 			SpaceComponent: common.SpaceComponent{
-				Position: engo.Point{X: rand.Float32() * boundaryX, Y: rand.Float32() * boundaryY},
+				Position: engo.Point{X: rand.Float32()*safeX + safeGap, Y: rand.Float32()*safeY + safeGap},
 				Width:    radius,
 				Height:   radius,
 			},
@@ -47,6 +51,7 @@ func NewBoidsSet(boidCount int, boundaryX, boundaryY float32) []*Boid {
 type Boid struct {
 	bid          int
 	speed        engo.Point
+	accel        engo.Point
 	nextPosition engo.Point
 	ecs.BasicEntity
 	common.RenderComponent
@@ -121,6 +126,11 @@ func multiplyV(p *engo.Point, y float32) *engo.Point {
 	return p
 }
 
+func distance(p1 engo.Point, p2 engo.Point) float32 {
+	x, y := p1.X-p2.X, p1.Y-p2.Y
+	return float32(math.Sqrt(float64(x*x + y*y)))
+}
+
 func minF32(a, b float32) float32 {
 	if a < b {
 		return a
@@ -145,30 +155,95 @@ func (bs *BoidSystem) addCohesionImpact() {
 
 }
 
+// borderBounce ...
+func borderBounce(pos float32, maxBorder float32) float32 {
+	if pos < 0 {
+		// bouce it and give it positive direction acceleration
+		return 1 / pos
+	}
+
+	if pos+viewRadius > maxBorder {
+		// bouce it and give it negative direction acceleration
+		return 1 / (pos - maxBorder)
+	}
+
+	return 0
+}
+
 func (bs *BoidSystem) clacAcceleration(boid *Boid) engo.Point {
 	nextMap := bs.nextMap
 
-	lx, ly := int(maxF32(0, boid.Position.X-viewRadius)), int(maxF32(0, boid.Position.Y-viewRadius))
-	ux, uy := int(minF32(bs.bx, boid.Position.X+viewRadius)), int(minF32(bs.by, boid.Position.Y+viewRadius))
+	// lx, ly := int(maxF32(0, boid.Position.X-viewRadius)), int(maxF32(0, boid.Position.Y-viewRadius))
+	// ux, uy := int(minF32(bs.bx, boid.Position.X+viewRadius)), int(minF32(bs.by, boid.Position.Y+viewRadius))
+	lx, ly := 0, 0
+	ux, uy := int(bs.bx), int(bs.by)
 
-	var avgVec, avgPoi engo.Point
+	var avgVec, avgPoi, separateVec engo.Point
 
 	var count int
 	for lx <= ux {
 		for ly <= uy {
 			if nextMap[lx][ly] != nil {
-				avgVec.Add(nextMap[lx][ly].speed)
-				avgPoi.Add(nextMap[lx][ly].Position)
-				count++
+				otherBoid := nextMap[lx][ly]
+				d := maxF32(distance(boid.Position, otherBoid.Position), 1)
+				if d < viewRadius {
+					// algin
+					avgVec.Add(otherBoid.speed)
+					// cohesion
+					avgPoi.Add(otherBoid.Position)
+
+					// separate
+					separateVec.X += (boid.Position.X - otherBoid.Position.X) / d
+					separateVec.Y += (boid.Position.Y - otherBoid.Position.Y) / d
+
+					count++
+				}
 			}
 			ly++
 		}
 		lx++
 	}
-	divideV(&avgVec, float32(count))
-	divideV(&avgPoi, float32(count))
-	multiplyV(avgVec.Add(avgPoi), adjRate)
-	return avgVec
+	accel := engo.Point{X: borderBounce(boid.Position.X, bs.bx), Y: borderBounce(boid.Position.Y, bs.by)}
+	if count > 0 {
+		// log.Println(borderBounce(boid.Position.X, bs.bx), borderBounce(boid.Position.Y, bs.by))
+		// log.Println(avgPoi, avgVec, separateVec)
+		divideV(&avgVec, float32(count))
+		divideV(&avgPoi, float32(count))
+		avgPoi.Subtract(boid.Position)
+		avgVec.Subtract(boid.speed)
+
+		accel.Add(avgVec).Add(avgPoi).Add(separateVec)
+		log.Println(accel, boid.speed, avgPoi, avgVec, separateVec)
+	}
+	accel.MultiplyScalar(adjRate)
+
+	return accel
+}
+
+func (bs *BoidSystem) Update(float32) {
+
+	for _, boid := range bs.boids {
+		// delete old position of boid
+		bs.curMap[limit(0, boid.Position.X, bs.bx)][limit(0, boid.Position.Y, bs.by)] = nil
+
+		// log.Println(accel)
+		accel := bs.clacAcceleration(boid)
+		boid.speed.Add(accel)
+
+		bs.boudnaryCollision(boid)
+
+		boid.Position = boid.nextPosition
+		boid.nextPosition.Add(boid.speed)
+		// log.Println(boid.speed, boid.Position, boid.nextPosition)
+
+		// add new position of boid
+		// log.Println(limit(0, boid.Position.X, bs.bx), limit(0, boid.Position.Y, bs.by))
+		bs.curMap[limit(0, boid.Position.X, bs.bx)][limit(0, boid.Position.Y, bs.by)] = boid
+	}
+
+	bs.curMap, bs.nextMap = bs.nextMap, bs.curMap
+
+	// time.Sleep(5 * time.Millisecond)
 }
 
 // change boid speed direction
@@ -182,28 +257,4 @@ func (bs *BoidSystem) boudnaryCollision(boid *Boid) {
 	if nextPosition.Y < 0 || nextPosition.Y > bs.by {
 		speed.Y = -speed.Y
 	}
-}
-
-func (bs *BoidSystem) Update(float32) {
-
-	for _, boid := range bs.boids {
-		// delete old position of boid
-		bs.curMap[limit(0, boid.Position.X, bs.bx)][limit(0, boid.Position.Y, bs.by)] = nil
-
-		accel := bs.clacAcceleration(boid)
-		multiplyV(accel.Subtract(boid.speed), adjRate)
-		boid.speed.Add(accel)
-
-		bs.addSeparateImpact()
-		bs.boudnaryCollision(boid)
-
-		boid.Position = boid.nextPosition
-		boid.nextPosition.Add(boid.speed)
-		// add new position of boid
-		bs.curMap[limit(0, boid.Position.X, bs.bx)][limit(0, boid.Position.Y, bs.by)] = boid
-	}
-
-	bs.curMap, bs.nextMap = bs.nextMap, bs.curMap
-
-	time.Sleep(5 * time.Millisecond)
 }
