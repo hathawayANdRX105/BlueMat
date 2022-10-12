@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	boidCount         = 50
-	BoundaryY float32 = 600
-	BoundaryX float32 = 600
+	boidCount         = 100
+	BoundaryX float32 = 1600
+	BoundaryY float32 = 1200
 )
 
 type myScene struct{}
@@ -36,7 +36,6 @@ func (*myScene) Setup(updater engo.Updater) {
 	common.SetBackground(color.Black)
 
 	boids := boid.NewBoidsSet(boidCount, BoundaryX, BoundaryY)
-	ms.Config(boids, BoundaryX, BoundaryY)
 
 	world.AddSystem(&rs)
 	world.AddSystem(&ms)
@@ -44,6 +43,8 @@ func (*myScene) Setup(updater engo.Updater) {
 	for _, b := range boids {
 		rs.Add(&b.BasicEntity, &b.RenderComponent, &b.SpaceComponent)
 	}
+
+	ms.Config(boids, BoundaryX, BoundaryY)
 
 }
 
