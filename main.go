@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	boidCount         = 100
+	boidCount         = 8000
 	BoundaryX float32 = 1600
 	BoundaryY float32 = 1200
 )

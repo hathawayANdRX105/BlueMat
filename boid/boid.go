@@ -1,24 +1,21 @@
 package boid
 
 import (
+	"github.com/EngoEngine/engo"
 	"image/color"
 	"log"
 	"math"
 	"math/rand"
 	"time"
 
-	"github.com/EngoEngine/engo"
-
 	"github.com/EngoEngine/ecs"
 	"github.com/EngoEngine/engo/common"
 )
 
 var (
-	green            = color.RGBA{10, 255, 50, 255}
-	maxSpeed float32 = 1
-	adjRate  float32 = 0.015
-	// initRate          float32 = 0.25
-	radius            float32 = 3
+	green                     = color.RGBA{R: 10, G: 255, B: 50, A: 255}
+	maxSpeed          float32 = 1
+	radius            float32 = 2
 	viewRadius        float32 = 50
 	riskRadius        float32 = 10
 	alignWeight       float32 = 0.1
@@ -27,6 +24,8 @@ var (
 	noiseWeight       float32 = 0.3
 	senseWeight       float32 = 0.1
 	speedUpdateWeight float32 = 0.2
+	loadFactor                = 1000
+	core                      = 2
 )
 
 func NewBoidsSet(boidCount int, boundaryX, boundaryY float32) []*Boid {
@@ -46,7 +45,7 @@ func NewBoidsSet(boidCount int, boundaryX, boundaryY float32) []*Boid {
 				Drawable: common.Circle{},
 				Color:    green,
 			},
-			speed: engo.Point{X: (rand.Float32()*2 - 1), Y: (rand.Float32()*2 - 1)},
+			speed: engo.Point{X: rand.Float32()*2 - 1, Y: rand.Float32()*2 - 1},
 		}
 
 		boids = append(boids, &boid)
@@ -56,31 +55,14 @@ func NewBoidsSet(boidCount int, boundaryX, boundaryY float32) []*Boid {
 }
 
 type Boid struct {
-	bid            int
-	speed          engo.Point
-	neighbors      []int
-	collisionRisks []int
+	bid       int
+	speed     engo.Point
+	nextSpeed engo.Point
+	//	neighbors      []int
+	//	collisionRisks []int
 	ecs.BasicEntity
 	common.RenderComponent
 	common.SpaceComponent
-}
-
-// lookAround ...
-func (b *Boid) lookAround(boids []*Boid) {
-	b.neighbors = b.neighbors[:0]
-	b.collisionRisks = b.collisionRisks[:0]
-
-	for _, otherBoid := range boids {
-		if otherBoid.bid != b.bid {
-			dist := distance(otherBoid.Position, b.Position)
-			if dist < viewRadius {
-				b.neighbors = append(b.neighbors, otherBoid.bid)
-			}
-			if dist < riskRadius {
-				b.collisionRisks = append(b.collisionRisks, otherBoid.bid)
-			}
-		}
-	}
 }
 
 func limitSpeed(speed *engo.Point, lower, high float32) {
@@ -106,124 +88,41 @@ func addNoise(p *engo.Point, weight float32) {
 	p.Y += ((rand.Float32() * 2) - 1) * weight
 }
 
-func (b *Boid) getAvgVecAndAvgPoi(boids []*Boid) (engo.Point, engo.Point) {
-	var avgVec, avgPoi engo.Point
-
-	for _, id := range b.neighbors {
-		avgVec.Add(boids[id].speed)
-		avgPoi.Add(boids[id].Position)
-	}
-
-	n := float32(len(b.neighbors))
-	avgVec.MultiplyScalar(1 / n)
-	avgPoi.MultiplyScalar(1 / n)
-	addNoise(&avgVec, senseWeight)
-	addNoise(&avgPoi, senseWeight)
-
-	return avgVec, avgPoi
-}
-
-func (b *Boid) getAvgSep(boids []*Boid) engo.Point {
-	var avgSep engo.Point
-	for _, id := range b.collisionRisks {
-		avgSep.Add(boids[id].Position)
-	}
-
-	n := float32(len(b.collisionRisks))
-	avgSep.MultiplyScalar(1 / n)
-	addNoise(&avgSep, senseWeight)
-
-	return avgSep
-}
-
-func (b *Boid) Start(bs *BoidSystem) {
-	// time.Sleep(30 * time.Millisecond)
-	boids := bs.boids
-
-	for {
-		b.lookAround(boids)
-
-		nextSpeed := b.speed
-
-		if len(b.neighbors) > 0 {
-			avgVec, avgPoi := b.getAvgVecAndAvgPoi(boids)
-			avgVec.Subtract(b.speed).MultiplyScalar(alignWeight)
-			avgPoi.Subtract(b.Position).MultiplyScalar(cohesionWeight)
-			nextSpeed.Add(avgVec).Add(avgPoi)
-			// log.Printf("bid:%d => a:%v, c:%v, n:%v\n", b.bid, avgVec, avgPoi, nextSpeed)
-		}
-		// log.Printf("bid:%d => p: %v, s: %v \n", b.bid, nextSpeed, b.speed)
-
-		if len(b.collisionRisks) > 0 {
-			avgSep := b.getAvgSep(boids)
-			avgSep.Subtract(b.Position).MultiplyScalar(separateWeight)
-			nextSpeed.Add(avgSep)
-			// log.Printf("bid:%d => s:%v n:%v\n", b.bid, avgSep, nextSpeed)
-		}
-
-		addNoise(&nextSpeed, noiseWeight)
-		// newSpeed = (1 - w) * oldSpeed + w * nextSpeed
-		nextSpeed = *b.speed.MultiplyScalar(1 - speedUpdateWeight).Add(*nextSpeed.MultiplyScalar(speedUpdateWeight))
-		limitSpeed(&nextSpeed, -maxSpeed, maxSpeed)
-		// log.Printf("bid:%d => p: %v, s: %v \n", b.bid, nextSpeed, b.speed)
-
-		b.Position.Add(nextSpeed)
-		b.speed = nextSpeed
-		bs.boudnaryBounce(b)
-
-		// bs.boudnaryMirror(b)
-
-		// log.Printf("bid:%d => p: %v, s: %v \n", b.bid, b.Position, b.speed)
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 type BoidSystem struct {
-	bx, by float32 // the boundary of the X or Y axis
-	boids  []*Boid
+	step      int
+	bx, by    float32 // the boundary of the X or Y axis
+	boids     []*Boid
+	speedChan chan *Boid
 }
 
 func (bs *BoidSystem) Config(boids []*Boid, bx, by float32) {
+	log.Printf("boids count => %d \n", len(boids))
 
 	bs.bx = bx - radius
 	bs.by = by - radius
 	bs.boids = boids
-	log.Printf("boids count => %d \n", len(boids))
+	bs.speedChan = make(chan *Boid, len(boids))
 
-	for _, b := range boids {
-		go b.Start(bs)
-	}
-}
+	step := (len(boids) / 10) + 1
+	//	if step > loadFactor {
+	//		step = (len(boids) >> (core + 2)) + 1
+	//	}
+	bs.step = step
 
-func (bs *BoidSystem) New(*ecs.World) {}
-
-func (*BoidSystem) Remove(ecs.BasicEntity) {}
-
-func limit(x, y, z float32) int {
-	if y < x {
-		return int(x)
-	}
-
-	if y > z {
-		return int(z)
+	var goRoutinueCount int
+	for i := 0; i < len(boids); i = i + step {
+		if i+step >= len(boids) {
+			step = len(boids) - i
+		}
+		go bs.clacAcceleration(boids[i : i+step])
+		goRoutinueCount++
 	}
 
-	return int(y)
-}
-
-func divideV(p *engo.Point, y float32) *engo.Point {
-	if y < 1 {
-		return p
-	}
-	p.X /= y
-	p.Y /= y
-	return p
-}
-
-func multiplyV(p *engo.Point, y float32) *engo.Point {
-	p.X *= y
-	p.Y *= y
-	return p
+	go bs.updateSpeed()
+	go bs.updateSpeed()
+	go bs.updateSpeed()
+	go bs.updateSpeed()
+	log.Printf("each step => %d, total gorountine for boid => %d \n", step, goRoutinueCount)
 }
 
 func distance(p1 engo.Point, p2 engo.Point) float32 {
@@ -231,60 +130,69 @@ func distance(p1 engo.Point, p2 engo.Point) float32 {
 	return float32(math.Sqrt(float64(x*x + y*y)))
 }
 
-func minF32(a, b float32) float32 {
-	if a < b {
-		return a
-	}
+func (bs *BoidSystem) clacAcceleration(boids []*Boid) {
+	sleepTime := 2 * time.Millisecond
+	//log.Printf("sleep time for each goroutine => %v \n", sleepTime)
 
-	return b
-}
+	for {
+		for _, boid := range boids {
+			var vCount, sCount int
+			var align, cohesion, separation engo.Point
+			for _, b := range bs.boids {
+				if d := distance(boid.Position, b.Position); b.bid != boid.bid && d < viewRadius {
+					vCount++
+					align.Add(b.speed)
+					cohesion.Add(b.Position)
 
-func maxF32(a, b float32) float32 {
-	if a > b {
-		return a
-	}
-
-	return b
-}
-
-func (bs *BoidSystem) clacAcceleration(boid *Boid) {
-	var avgPoi, separateVec engo.Point
-	avgVec := engo.Point{X: 0, Y: 0}
-
-	var count int
-	for _, b := range bs.boids {
-		if b.bid != boid.bid {
-			if d := distance(boid.Position, b.Position); d < viewRadius {
-				// algin
-				avgVec.Add(b.speed)
-				// cohesion
-				avgPoi.Add(b.Position)
-
-				// separate
-				separateVec.X += (b.Position.X - boid.Position.X) / d
-				separateVec.Y += (b.Position.Y - boid.Position.Y) / d
-
-				count++
+					if d < riskRadius {
+						separation.Add(b.Position)
+						sCount++
+					}
+				}
 			}
+
+			if vCount > 0 {
+				n1 := 1 / float32(vCount)
+				align.MultiplyScalar(n1).Subtract(boid.speed).MultiplyScalar(alignWeight)
+				cohesion.MultiplyScalar(n1).Subtract(boid.Position).MultiplyScalar(cohesionWeight)
+				addNoise(&align, senseWeight)
+				addNoise(&cohesion, senseWeight)
+
+				if sCount > 0 {
+					n2 := 1 / float32(sCount)
+					separation.MultiplyScalar(n2).Subtract(boid.Position).MultiplyScalar(separateWeight)
+					addNoise(&separation, senseWeight)
+				}
+
+				align.Add(cohesion).Add(separation)
+			}
+
+			nextSpeed := boid.speed
+			nextSpeed.Add(align)
+			boid.nextSpeed = nextSpeed
+
+			bs.speedChan <- boid
 		}
+
+		// 让画面渲染更加平滑
+		time.Sleep(sleepTime)
 	}
-
-	if count > 0 {
-		divideV(&avgVec, float32(count))
-		divideV(&avgPoi, float32(count))
-		avgPoi.Subtract(boid.Position)
-		avgVec.Subtract(boid.speed)
-
-		avgVec.Add(avgPoi).Add(separateVec)
-	}
-
-	avgVec.MultiplyScalar(adjRate)
-
-	boid.speed.Add(avgVec)
-	// log.Println(boid.speed, avgPoi, avgVec, separateVec)
 }
 
-func (bs *BoidSystem) Update(float32) {
+func (bs *BoidSystem) updateSpeed() {
+
+	for boid := range bs.speedChan {
+		nextSpeed := boid.nextSpeed
+		// 线性增长 nextSpeed = (1 - w) * oldSpeed + w * NewSpeed
+		nextSpeed = *boid.speed.MultiplyScalar(1 - speedUpdateWeight).Add(*nextSpeed.MultiplyScalar(speedUpdateWeight))
+		addNoise(&nextSpeed, noiseWeight)
+		limitSpeed(&nextSpeed, -maxSpeed, maxSpeed)
+
+		boid.Position.Add(nextSpeed)
+		boid.speed = nextSpeed
+
+		bs.boudnaryBounce(boid)
+	}
 }
 
 func (bs *BoidSystem) boudnaryMirror(boid *Boid) {
@@ -326,3 +234,9 @@ func (bs *BoidSystem) boudnaryBounce(boid *Boid) {
 		boid.speed.Y -= viewRadius / (bs.by - position.Y)
 	}
 }
+
+func (bs *BoidSystem) New(*ecs.World) {}
+
+func (*BoidSystem) Remove(ecs.BasicEntity) {}
+
+func (bs *BoidSystem) Update(float32) {}
